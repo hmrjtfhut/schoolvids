@@ -60,16 +60,13 @@
     // ====== CONFIGURE THESE ======
     // Replace the config below with your Firebase project's config (safe to be public).
     const firebaseConfig = {
-      apiKey: "AIzaSyDi_cP0IrZ6DcTUS86nXjMlfh_NxiB12XM",
-      authDomain: "wlsvids.firebaseapp.com",
-      projectId: "wlsvids",
-      storageBucket: "wlsvids.firebasestorage.app",
-      messagingSenderId: "425489293074",
-      appId: "1:425489293074:web:ffb459d0d9cfee5edb1dcb",
-      measurementId: "G-QS087LNTK6"
+      apiKey: "REPLACE_WITH_YOUR_FIREBASE_APIKEY",
+      authDomain: "REPLACE_WITH_PROJECT.firebaseapp.com",
+      projectId: "REPLACE_WITH_PROJECT",
+      // other keys as provided by Firebase
     };
-    // Allowed district domain (per request): wlsstudents.org
-    const ALLOWED_DOMAIN = 'gmail.com';
+    // Allowed domains (add 'gmail.com' for testing)
+    const ALLOWED_DOMAINS = ['wlsstudents.org', 'gmail.com'];
     // Backend upload URL (adjust to your Node server address)
     const BACKEND_UPLOAD_URL = 'http://localhost:3000/upload';
     const BACKEND_LIST_URL = 'http://localhost:3000/list';
@@ -116,9 +113,9 @@
       const email = user.email || '';
       const domain = email.split('@')[1] || '';
 
-      // Enforce district domain
-      if (domain.toLowerCase() !== ALLOWED_DOMAIN) {
-        alert('Access restricted to district email addresses ("' + ALLOWED_DOMAIN + '"). You will be signed out.');
+      // Enforce allowed domains
+      if (!ALLOWED_DOMAINS.includes(domain.toLowerCase())) {
+        alert('Access restricted to allowed domains ("' + ALLOWED_DOMAINS.join(', ') + '"). You will be signed out.');
         await auth.signOut();
         return;
       }
@@ -242,5 +239,4 @@
     }
   </script>
 </body>
-
 </html>
