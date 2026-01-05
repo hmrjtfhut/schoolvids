@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>School District Video Upload (PoC)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:#222;margin:0;padding:1.5rem;background:#f7f8fa}
+    .card{max-width:820px;margin:1rem auto;padding:1rem;background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(20,20,40,0.06)}
+    header h1{margin:.2rem 0;font-size:1.2rem}
+    .muted{color:#666;font-size:.9rem}
+    label{display:block;margin-top:.75rem}
+    input[type=text], input[type=file]{width:100%;margin-top:.25rem}
+    button{margin-top:1rem;padding:.6rem 1rem;border-radius:6px;border:0;background:#2563eb;color:#fff}
+    .danger{background:#ef4444}
+    #progressWrap{margin-top:1rem;background:#eee;padding:.6rem;border-radius:6px;display:none}
+    #bar{height:12px;background:#2563eb;width:0;border-radius:6px;transition:width .2s}
+    .videos{margin-top:1rem}
+    .videoItem{margin-bottom:1rem}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1>District Video Upload — wlsstudents.org (PoC)</h1>
+      <div class="muted">Sign in with Google and upload short videos for your district.</div>
+    </header>
+
+    <div id="authSection">
+      <div id="firebaseui"></div>
+      <button id="signInBtn">Sign in with Google</button>
+      <button id="signOutBtn" class="hidden">Sign out</button>
+      <div id="userInfo" class="muted"></div>
+    </div>
+
+    <form id="uploadForm" class="hidden">
+      <label>Video title
+        <input type="text" id="title" placeholder="Enter a short title" required>
+      </label>
+      <label>Video file
+        <input type="file" id="videoFile" accept="video/*" required>
+      </label>
+      <button id="uploadBtn" type="button">Upload</button>
+      <div id="progressWrap">
+        <div id="bar"></div>
+        <div id="progressText" class="muted"></div>
+      </div>
+    </form>
+
+    <section class="videos card" id="videosSection">
+      <h3>Available videos</h3>
+      <div id="videosList" class="muted">(No videos loaded)</div>
+    </section>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+  <script>
+    // ====== CONFIGURE THESE ======
+    // Replace the config below with your Firebase project's config (safe to be public).
+    const firebaseConfig = {
+      apiKey: "AIzaSyDi_cP0IrZ6DcTUS86nXjMlfh_NxiB12XM",
+      authDomain: "wlsvids.firebaseapp.com",
+      projectId: "wlsvids",
+      storageBucket: "wlsvids.firebasestorage.app",
+      messagingSenderId: "425489293074",
+      appId: "1:425489293074:web:ffb459d0d9cfee5edb1dcb",
+      measurementId: "G-QS087LNTK6"
+    };
+    // Allowed district domain (per request): wlsstudents.org
+    const ALLOWED_DOMAIN = 'wlsstudents.org';
+    // Backend upload URL (adjust to your Node server address)
+    const BACKEND_UPLOAD_URL = 'http://localhost:3000/upload';
+    const BACKEND_LIST_URL = 'http://localhost:3000/list';
+    // =============================
+
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+
+    const signInBtn = document.getElementById('signInBtn');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const userInfo = document.getElementById('userInfo');
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const videoFile = document.getElementById('videoFile');
+    const titleInput = document.getElementById('title');
+    const progressWrap = document.getElementById('progressWrap');
+    const bar = document.getElementById('bar');
+    const progressText = document.getElementById('progressText');
+    const videosList = document.getElementById('videosList');
+
+    // Sign in popup using Google
+    signInBtn.addEventListener('click', async () => {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      try {
+        await auth.signInWithPopup(provider);
+      } catch (err) {
+        alert('Sign-in failed: ' + err.message);
+      }
+    });
+
+    signOutBtn.addEventListener('click', () => auth.signOut());
+
+    auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        // not signed in
+        userInfo.textContent = '';
+        signOutBtn.classList.add('hidden');
+        uploadForm.classList.add('hidden');
+        signInBtn.classList.remove('hidden');
+        return;
+      }
+      // User signed in
+      const name = user.displayName || '';
+      const email = user.email || '';
+      const domain = email.split('@')[1] || '';
+
+      // Enforce district domain
+      if (domain.toLowerCase() !== ALLOWED_DOMAIN) {
+        alert('Access restricted to district email addresses ("' + ALLOWED_DOMAIN + '"). You will be signed out.');
+        await auth.signOut();
+        return;
+      }
+
+      userInfo.textContent = `${name} — ${email}`;
+      signInBtn.classList.add('hidden');
+      signOutBtn.classList.remove('hidden');
+      uploadForm.classList.remove('hidden');
+
+      // Preload list of videos for this district
+      loadVideoList(domain);
+    });
+
+    // Upload handler — uses XHR for upload progress
+    uploadBtn.addEventListener('click', async () => {
+      const file = videoFile.files[0];
+      if (!file) return alert('Please select a video file.');
+      const title = titleInput.value.trim() || file.name;
+
+      // basic client-side limits (also enforced server-side)
+      const MAX_MB = 512; // allow up to 512 MB in UI
+      if (file.size > MAX_MB * 1024 * 1024) return alert('File is too large (UI limit: ' + MAX_MB + ' MB).');
+
+      const user = auth.currentUser;
+      if (!user) return alert('You must be signed in.');
+
+      // get Firebase ID token to prove identity to backend
+      const idToken = await user.getIdToken();
+
+      const fd = new FormData();
+      fd.append('video', file);
+      fd.append('title', title);
+      fd.append('uploaderName', user.displayName || '');
+      fd.append('uploaderEmail', user.email || '');
+      fd.append('district', user.email.split('@')[1] || '');
+      fd.append('timestamp', new Date().toISOString());
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', BACKEND_UPLOAD_URL, true);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + idToken);
+
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const pct = (e.loaded / e.total) * 100;
+        bar.style.width = pct + '%';
+        progressWrap.style.display = 'block';
+        const elapsed = (Date.now() - startTime) / 1000; // seconds
+        const rate = e.loaded / elapsed; // bytes/sec
+        const remaining = (e.total - e.loaded) / (rate || 1);
+        progressText.textContent = `${Math.round(pct)}% — ${formatBytes(e.loaded)} / ${formatBytes(e.total)} — ETA ${formatTime(remaining)}`;
+      };
+
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          if (xhr.status === 200) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              alert('Upload complete. Drive file ID: ' + res.driveFileId);
+              // reset UI
+              bar.style.width = '0%';
+              progressWrap.style.display = 'none';
+              videoFile.value = '';
+              titleInput.value = '';
+              loadVideoList(user.email.split('@')[1]);
+            } catch (err) {
+              alert('Upload finished but response parsing failed.');
+            }
+          } else {
+            alert('Upload failed: ' + xhr.responseText);
+          }
+        }
+      };
+
+      const startTime = Date.now();
+      xhr.send(fd);
+    });
+
+    function formatBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n/1024).toFixed(1) + ' KB';
+      if (n < 1024 * 1024 * 1024) return (n/(1024*1024)).toFixed(1) + ' MB';
+      return (n/(1024*1024*1024)).toFixed(1) + ' GB';
+    }
+    function formatTime(sec){
+      if (!isFinite(sec) || sec < 1) return '0s';
+      const s = Math.round(sec);
+      const m = Math.floor(s/60); const r = s%60;
+      return (m?m+'m ':'') + r + 's';
+    }
+
+    // Load list of videos from backend (simple implementation)
+    async function loadVideoList(district) {
+      try {
+        const res = await fetch(BACKEND_LIST_URL + '?district=' + encodeURIComponent(district));
+        if (!res.ok) throw new Error('Failed to fetch list');
+        const arr = await res.json();
+        if (!Array.isArray(arr) || arr.length === 0) {
+          videosList.textContent = '(No videos found)';
+          return;
+        }
+        videosList.innerHTML = '';
+        arr.forEach(item => {
+          const div = document.createElement('div');
+          div.className = 'videoItem';
+          // Use embed view URL (user-facing)
+          const iframe = document.createElement('iframe');
+          iframe.width = 560; iframe.height = 315;
+          // item.embedUrl is expected to be a drive /view URL (public or permissioned).
+          iframe.src = item.embedUrl;
+          iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+          iframe.setAttribute('frameborder','0');
+          const meta = document.createElement('div');
+          meta.textContent = `${item.title} — uploaded by ${item.uploaderName} (${new Date(item.uploadTime).toLocaleString()})`;
+          div.appendChild(meta);
+          div.appendChild(iframe);
+          videosList.appendChild(div);
+        });
+      } catch (err) {
+        videosList.textContent = '(Failed to load videos)';
+      }
+    }
+  </script>
+</body>
+</html>
